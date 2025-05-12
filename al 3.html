@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Tool Dự đoán Tài Xỉu</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{font-family:Arial,sans-serif;background:#111;color:#eee;overflow-x:hidden;}
+    nav{display:flex;background:#222;}
+    nav a{flex:1;text-align:center;padding:15px;cursor:pointer;border-bottom:3px solid transparent;transition:border .3s;}
+    nav a.active{border-bottom:3px solid #6cf;background:#333;}
+    .tab{display:none;padding:20px;}
+    .tab.active{display:block;}
+    input,button,select,textarea{background:#222;border:1px solid #444;color:#eee;padding:8px;margin:5px 0;width:100%;}
+    .small-input{width:30%;display:inline-block;margin-right:3%;}
+    button{cursor:pointer;}
+    .countdown{font-size:18px;margin:10px 0;color:#6cf;}
+    .robot{font-size:100px;text-align:center;margin-top:20px;animation:float 2s ease-in-out infinite;}
+    @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-20px)}}
+    .bg-number{position:fixed;font-size:20px;opacity:0.1;animation:move linear infinite;user-select:none;}
+    @keyframes move{from{transform:translateY(100vh)}to{transform:translateY(-10vh)}}
+    .debug{margin-top:10px;background:#222;padding:10px;font-size:14px;white-space:pre;overflow-x:auto;}
+    #exportArea, #importArea{margin-top:10px;}
+    textarea{height:120px;resize:vertical;}
+  </style>
+</head>
+<body>
+
+  <nav>
+    <a id="tab-key" class="active">Nhập Key</a>
+    <a id="tab-admin">Admin</a>
+    <a id="tab-predict" style="display:none;">Dự đoán</a>
+  </nav>
+
+  <!-- Tab Nhập Key -->
+  <div id="page-key" class="tab active">
+    <h2>Nhập Key</h2>
+    <input type="text" id="inputKey" placeholder="Nhập key...">
+    <button onclick="checkKey()">Xác nhận</button>
+
+    <!-- Import via Paste JSON -->
+    <div id="importArea">
+      <p>Hoặc dán JSON keys vào đây:</p>
+      <textarea id="importJson" placeholder='[{"key":"...","exp":"...","assignedDevice":null},…]'></textarea>
+      <button onclick="importFromPaste()">Import JSON</button>
+    </div>
+
+    <p id="msgKey"></p>
+  </div>
+
+  <!-- Tab Admin -->
+  <div id="page-admin" class="tab">
+    <h2>Admin Login</h2>
+    <div id="login-form">
+      <input type="text" id="adminUser" placeholder="Username">
+      <input type="password" id="adminPass" placeholder="Password">
+      <button onclick="adminLogin()">Đăng nhập</button>
+      <p id="msgLogin"></p>
+    </div>
+    <div id="admin-panel" style="display:none;">
+      <h3>Tạo Key Mới</h3>
+      <select id="keyDays">
+        <option value="1">1 ngày</option>
+        <option value="3">3 ngày</option>
+        <option value="7">7 ngày</option>
+      </select>
+      <button onclick="generateKey()">Tạo Key</button>
+
+      <h3>Danh sách Key</h3>
+      <table>
+        <thead><tr><th>Key</th><th>Hạn dùng</th><th>Xóa</th></tr></thead>
+        <tbody id="keyList"></tbody>
+      </table>
+
+      <!-- Export via Copy JSON -->
+      <button onclick="exportKeys()">Xuất JSON Keys</button>
+      <div id="exportArea" style="display:none;">
+        <p>Sao chép JSON keys bên dưới:</p>
+        <textarea id="exportJson" readonly></textarea>
+        <button onclick="copyExport()">Copy vào Clipboard</button>
+      </div>
+
+      <!-- Admin can also paste JSON -->
+      <div id="importAdminArea">
+        <p>Hoặc dán JSON keys vào đây:</p>
+        <textarea id="importJsonAdmin" placeholder='[{"key":"...","exp":"...","assignedDevice":null},…]'></textarea>
+        <button onclick="importAdminFromPaste()">Import JSON</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab Dự đoán -->
+  <div id="page-predict" class="tab">
+    <h2>Dự đoán Tài Xỉu</h2>
+    <div id="countdown" class="countdown"></div>
+    <p>Nhập chuỗi MD5:</p>
+    <input type="text" id="md5Input" placeholder="Paste MD5...">
+    <p>Chọn 3 chỉ số byte (0–15):</p>
+    <input class="small-input" type="number" id="idx0" min="0" max="15" value="6">
+    <input class="small-input" type="number" id="idx1" min="0" max="15" value="11">
+    <input class="small-input" type="number" id="idx2" min="0" max="15" value="2">
+    <button onclick="startPredict()">Predict</button>
+    <div id="predictArea"></div>
+    <div id="debugArea" class="debug"></div>
+  </div>
+
+  <script>
+    // Sinh deviceId duy nhất
+    let deviceId = localStorage.getItem('deviceId');
+    if (!deviceId) {
+      deviceId = Math.random().toString(36).substr(2,9) + Date.now().toString(36);
+      localStorage.setItem('deviceId', deviceId);
+    }
+
+    // Load / Save keys
+    function loadKeys() {
+      let arr = JSON.parse(localStorage.getItem('keys')||'[]');
+      const now = new Date();
+      arr = arr.filter(o=>{
+        if(new Date(o.exp)<=now) return false;
+        if(o.assignedDevice && o.assignedDevice!==deviceId) return false;
+        return true;
+      }).sort((a,b)=>new Date(b.exp)-new Date(a.exp));
+      localStorage.setItem('keys', JSON.stringify(arr));
+      return arr;
+    }
+    function saveKeys(arr){ localStorage.setItem('keys', JSON.stringify(arr)); }
+
+    // Render Admin list
+    function renderKeys(){
+      const arr = loadKeys(), tbody = document.getElementById('keyList');
+      tbody.innerHTML = '';
+      arr.forEach((o,i)=>{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${o.key}</td>
+          <td>${new Date(o.exp).toLocaleString()}</td>
+          <td><span class="del" onclick="delKey(${i})">🗑️</span></td>`;
+        tbody.appendChild(tr);
+      });
+    }
+    function delKey(i){
+      let arr = loadKeys(); arr.splice(i,1); saveKeys(arr); renderKeys();
+    }
+
+    // Admin actions
+    function adminLogin(){
+      const u = document.getElementById('adminUser').value;
+      const p = document.getElementById('adminPass').value;
+      if (u==='admin' && p==='luuduchuy') {
+        document.getElementById('login-form').style.display='none';
+        document.getElementById('admin-panel').style.display='block';
+        renderKeys();
+      } else {
+        document.getElementById('msgLogin').textContent='Sai thông tin!';
+      }
+    }
+    function generateKey(){
+      const days = +document.getElementById('keyDays').value;
+      const k = Math.random().toString(36).substr(2,10) + Date.now().toString(36);
+      const exp = new Date(Date.now() + days*86400000);
+      let arr = loadKeys();
+      arr.push({key:k,exp:exp,assignedDevice:null});
+      saveKeys(arr); renderKeys();
+      alert('Key mới: '+k);
+    }
+
+    // Export JSON via textarea
+    function exportKeys(){
+      const arr = loadKeys();
+      const txt = JSON.stringify(arr, null, 2);
+      document.getElementById('exportJson').value = txt;
+      document.getElementById('exportArea').style.display = 'block';
+    }
+    function copyExport(){
+      const ta = document.getElementById('exportJson');
+      ta.select();
+      document.execCommand('copy');
+      alert('Đã copy JSON vào clipboard.');
+    }
+
+    // Import JSON (Admin)
+    function importAdminFromPaste(){
+      const str = document.getElementById('importJsonAdmin').value.trim();
+      try {
+        const imp = JSON.parse(str);
+        if(!Array.isArray(imp)) throw '';
+        const cur = loadKeys();
+        const map = new Map(cur.map(o=>[o.key,o]));
+        imp.forEach(o=>{ if(!map.has(o.key)){
+          o.exp = new Date(o.exp).toISOString();
+          o.assignedDevice = o.assignedDevice||null;
+          map.set(o.key,o);
+        }});
+        saveKeys(Array.from(map.values()));
+        renderKeys();
+        alert('Import thành công!');
+      } catch(e){
+        alert('JSON không hợp lệ.');
+      }
+    }
+
+    // Import JSON (User main tab)
+    function importFromPaste(){
+      const str = document.getElementById('importJson').value.trim();
+      try {
+        const imp = JSON.parse(str);
+        if(!Array.isArray(imp)) throw '';
+        const cur = loadKeys();
+        const map = new Map(cur.map(o=>[o.key,o]));
+        imp.forEach(o=>{ if(!map.has(o.key)){
+          o.exp = new Date(o.exp).toISOString();
+          o.assignedDevice = o.assignedDevice||null;
+          map.set(o.key,o);
+        }});
+        saveKeys(Array.from(map.values()));
+        alert('Import thành công!');
+        const saved = localStorage.getItem('myKey');
+        if(saved && loadKeys().some(k=>k.key===saved)){
+          document.getElementById('tab-predict').style.display='block';
+        }
+      } catch(e){
+        alert('JSON không hợp lệ.');
+      }
+    }
+
+    // Check Key & start countdown
+    let currentExp=null, timer=null;
+    function checkKey(){
+      const k = document.getElementById('inputKey').value.trim();
+      const arr = loadKeys(), idx = arr.findIndex(o=>o.key===k);
+      if(idx<0){
+        document.getElementById('msgKey').style.color='#f66';
+        return document.getElementById('msgKey').textContent='Key sai hoặc hết hạn!';
+      }
+      if(!arr[idx].assignedDevice){
+        arr[idx].assignedDevice=deviceId; saveKeys(arr);
+      }
+      currentExp = new Date(arr[idx].exp);
+      localStorage.setItem('myKey',k);
+      document.getElementById('msgKey').style.color='#6f6';
+      document.getElementById('msgKey').textContent='Key hợp lệ, mở tab Dự đoán.';
+      document.getElementById('tab-predict').style.display='block';
+      document.getElementById('tab-predict').click();
+      startCountdown();
+    }
+    window.onload=()=>{
+      const saved = localStorage.getItem('myKey');
+      if(saved){
+        const o = loadKeys().find(x=>x.key===saved);
+        if(o){
+          currentExp = new Date(o.exp);
+          document.getElementById('tab-predict').style.display='block';
+          startCountdown();
+        }
+      }
+    };
+    function startCountdown(){
+      if(!currentExp) return;
+      clearInterval(timer);
+      function upd(){
+        const diff = currentExp - new Date();
+        if(diff<=0){
+          clearInterval(timer);
+          alert('Key hết hạn!');
+          localStorage.removeItem('myKey');
+          location.reload();
+          return;
+        }
+        const h=Math.floor(diff/3600000),
+              m=Math.floor((diff%3600000)/60000),
+              s=Math.floor((diff%60000)/1000);
+        document.getElementById('countdown').textContent=
+          `Thời gian còn: ${h}h ${m}m ${s}s`;
+      }
+      upd(); timer=setInterval(upd,1000);
+    }
+
+    // Predict MD5 → 3 xúc xắc theo byte index tuỳ chọn
+    function startPredict(){
+      const md5 = document.getElementById('md5Input').value.trim();
+      if(!/^[a-fA-F0-9]{32}$/.test(md5)){
+        return alert('MD5 không hợp lệ!');
+      }
+      const bytes = [];
+      for(let i=0;i<32;i+=2){
+        const hex = md5.substr(i,2);
+        const dec = parseInt(hex,16);
+        bytes.push({hex,dec,die:(dec%6)+1});
+      }
+      const idxs = ['idx0','idx1','idx2'].map(id=>{
+        let v = parseInt(document.getElementById(id).value,10);
+        if(isNaN(v)||v<0) v=0; if(v>15) v=15; return v;
+      });
+      const dice = idxs.map(i=>bytes[i].die);
+      const sum = dice.reduce((a,b)=>a+b,0);
+      const res = sum<=10?'Xỉu':'Tài';
+      const acc = ((sum-3)/15*100).toFixed(1);
+
+      document.getElementById('debugArea').textContent =
+        'Bytes parsed (idx:hex→dec→die):\n' +
+        bytes.map((b,i)=>`${i}:${b.hex}→${b.dec}→${b.die}`).join('\n') +
+        `\n\nPicked idx:[${idxs.join(',')}]\nDice:[${dice.join(',')}] sum=${sum}`;
+
+      const area = document.getElementById('predictArea');
+      area.innerHTML = '<div class="robot">🤖</div><p>Phân tích...</p>';
+      setTimeout(()=>{
+        area.innerHTML=`
+          <div class="robot">🤖</div>
+          <p>Xúc xắc: ${dice.join(' + ')} = ${sum}</p>
+          <h3>Kết quả: ${res}</h3>
+          <p>Độ chính xác: ${acc}%</p>`;
+      },3000);
+    }
+
+    // Tab navigation
+    ['key','admin','predict'].forEach(t=>{
+      document.getElementById('tab-'+t).onclick=()=>{
+        ['key','admin','predict'].forEach(x=>{
+          document.getElementById('tab-'+x).classList.remove('active');
+          document.getElementById('page-'+x).classList.remove('active');
+        });
+        document.getElementById('tab-'+t).classList.add('active');
+        document.getElementById('page-'+t).classList.add('active');
+      };
+    });
+
+    // Hiệu ứng nền số di chuyển
+    for(let i=0;i<30;i++){
+      const n=document.createElement('div');
+      n.className='bg-number';
+      n.style.left=Math.random()*100+'vw';
+      n.style.animationDuration=(5+Math.random()*10)+'s';
+      n.textContent=Math.floor(Math.random()*100);
+      document.body.appendChild(n);
+    }
+  </script>
+
+</body>
+</html>
